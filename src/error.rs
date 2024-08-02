@@ -1,4 +1,7 @@
-use std::{error::Error, fmt::Display};
+use std::{
+    error::Error,
+    fmt::{Debug, Display},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SourcePos {
@@ -54,7 +57,6 @@ impl Span {
     }
 }
 
-#[derive(Debug)]
 pub struct Chunk<T> {
     pub span: Span,
     pub data: T,
@@ -69,5 +71,11 @@ impl<T> Chunk<T> {
             span: self.span,
             data: f(self.data),
         }
+    }
+}
+
+impl<T: Debug> Debug for Chunk<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(f)
     }
 }

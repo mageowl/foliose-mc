@@ -1,7 +1,9 @@
 use std::fs;
 
 use clap::{command, Command};
+use error::Chunk;
 use lexer::TokenStream;
+use parser::Program;
 
 mod error;
 mod lexer;
@@ -16,10 +18,9 @@ fn main() {
             let source_path: &str = subcmd.get_one::<String>("file").unwrap();
             let source = fs::read_to_string(source_path).expect("Failed to open file");
 
-            let source = TokenStream::from(source.as_str());
-            for token in source {
-                dbg!(token.unwrap().data);
-            }
+            let mut source = TokenStream::from(source.as_str());
+            let tree: Chunk<Program> = source.parse().unwrap();
+            dbg!(tree);
         }
         _ => todo!(),
     }
@@ -30,7 +31,7 @@ fn get_command() -> Command {
     use clap::Arg;
 
     command!()
-        .subcommand(Command::new("init").about("Setup new Helix project"))
+        .subcommand(Command::new("init").about("Setup new datapack with Foliose"))
         .subcommand(
             Command::new("build")
                 .about("Build project in current directory")
@@ -38,7 +39,7 @@ fn get_command() -> Command {
         )
         .subcommand(
             Command::new("test")
-                .about("Compile single .mch file.")
+                .about("Compile single .fol file.")
                 .arg(Arg::new("file")),
         )
         .arg_required_else_help(true)
@@ -47,7 +48,7 @@ fn get_command() -> Command {
 #[cfg(not(debug_assertions))]
 fn get_command() -> Command {
     command!()
-        .subcommand(Command::new("init").about("Setup new Helix project"))
+        .subcommand(Command::new("init").about("Setup new datapack with Foliose"))
         .subcommand(
             Command::new("build")
                 .about("Build project in current directory")

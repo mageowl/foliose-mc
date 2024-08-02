@@ -11,7 +11,6 @@ const OPERATORS: [char; 10] = ['=', '+', '-', '/', '%', '>', '<', ':', '.', '#']
 pub struct TokenStream<'a> {
     source: Peekable<Chars<'a>>,
     pos: SourcePos,
-    done: bool,
     peeked: Option<Option<<Self as Iterator>::Item>>,
 }
 
@@ -20,24 +19,23 @@ impl<'a> From<&'a str> for TokenStream<'a> {
         Self {
             source: value.chars().peekable(),
             pos: SourcePos { ln: 1, col: 1 },
-            done: false,
             peeked: None,
         }
     }
 }
 
 impl TokenStream<'_> {
-    pub fn expect_next(&mut self) -> Result<Chunk<Token>, SourceError> {
+    pub fn expect_next(&mut self, error_message: &str) -> Result<Chunk<Token>, SourceError> {
         self.next().unwrap_or_else(|| {
             Err(SourceError {
                 span: Span::new(self.pos, self.pos),
-                message: "Unexpected end of file.".to_string(),
+                message: error_message.to_string(),
             })
         })
     }
 
-    pub fn is_done(&self) -> bool {
-        self.done
+    pub fn is_done(&mut self) -> bool {
+        self.peek().is_none()
     }
 
     pub fn get_pos(&self) -> SourcePos {
@@ -77,10 +75,6 @@ impl<'a> Iterator for TokenStream<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(v) = self.peeked.take() {
             return v;
-        }
-
-        if self.done {
-            return None;
         }
 
         let mut start = self.pos;
@@ -172,10 +166,6 @@ impl<'a> Iterator for TokenStream<'a> {
             } else {
                 self.pos.col += 1;
             }
-        }
-
-        if self.source.peek().is_none() {
-            self.done = true;
         }
 
         if chunk.is_empty() {

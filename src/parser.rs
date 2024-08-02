@@ -14,7 +14,8 @@ pub trait Parsable: Sized {
 
 impl Parsable for String {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<Self>, SourceError> {
-        let chunk = src.expect_next()?;
+        let chunk =
+            src.expect_next("Trying to match identifier, but reached the end of the file.")?;
         if let Token::Ident(data) = chunk.data {
             Ok(Chunk {
                 span: chunk.span,
@@ -30,14 +31,14 @@ impl Parsable for String {
 }
 
 impl TokenStream<'_> {
-    fn parse<T: Parsable>(&mut self) -> Result<Chunk<T>, SourceError> {
+    pub fn parse<T: Parsable>(&mut self) -> Result<Chunk<T>, SourceError> {
         T::parse_from(self)
     }
 }
 
 macro_rules! parse_symbol {
     ($s:ident, $t:pat, $msg:literal) => {
-        let chunk = $s.expect_next()?;
+        let chunk = $s.expect_next("Trying to match $t, but reached the end of the file.")?;
         match chunk.data {
             $t => (),
             _ => {
@@ -60,12 +61,13 @@ macro_rules! parse_group {
 
             block.push($s.parse()?);
         }
-        $s.expect_next()?;
+        $s.expect_next("Trying to match $t, but reached the end of the file.")?;
 
         block
     }};
 }
 
+#[derive(Debug)]
 pub struct Program {
     body: Vec<Chunk<ModuleBody>>,
 }
@@ -86,13 +88,16 @@ impl Parsable for Program {
     }
 }
 
+#[derive(Debug)]
 pub enum ModuleBody {
-    Submodule {
+    Module {
         name: Chunk<String>,
+        instructions: Vec<Chunk<String>>,
         body: Vec<Chunk<Box<ModuleBody>>>,
     },
     Function {
         name: Chunk<String>,
+        instructions: Vec<Chunk<String>>,
         args: Vec<Chunk<FnArg>>,
         body: Vec<Chunk<Statement>>,
     },
@@ -101,7 +106,8 @@ pub enum ModuleBody {
 
 impl Parsable for ModuleBody {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<ModuleBody>, SourceError> {
-        let next = src.expect_next()?;
+        let next =
+            src.expect_next("Trying to read module body, but reached the end of the file.")?;
         match next.data {
             Token::KeywordModule => {
                 let name = src.parse()?;
@@ -117,7 +123,11 @@ impl Parsable for ModuleBody {
 
                 Ok(Chunk {
                     span: Span::new(next.span.start, src.get_pos()),
-                    data: Self::Submodule { name, body },
+                    data: Self::Module {
+                        name,
+                        body,
+                        instructions: Vec::new(),
+                    },
                 })
             }
             Token::KeywordFn => {
@@ -139,7 +149,12 @@ impl Parsable for ModuleBody {
 
                 Ok(Chunk {
                     span: Span::new(next.span.start, src.get_pos()),
-                    data: Self::Function { name, args, body },
+                    data: Self::Function {
+                        name,
+                        args,
+                        body,
+                        instructions: Vec::new(),
+                    },
                 })
             }
             Token::KeywordUse => {
@@ -155,11 +170,48 @@ impl Parsable for ModuleBody {
                     data,
                 })
             }
-            _ => Err(next.span.error(format!("Unexpected token {:?} in module body. Only resources, submodules, and imports can be defined inside a module.", next.data))),
+            Token::OpInstruction => {
+                parse_symbol!(
+                    src,
+                    Token::BracketOpen,
+                    "Expected the start of an instruction ('['), but got {:?} instead."
+                );
+
+                let mut inst = String::new();
+                loop {
+                    let char = src.next_raw()?;
+                    if char == ']' {
+                        break;
+                    } else {
+                        inst.push(char);
+                    }
+                }
+                let inst = Chunk {
+                    span: Span::new(next.span.start, src.get_pos()),
+                    data: inst,
+                };
+
+                let mut next = src.parse()?;
+                match &mut next.data {
+                    ModuleBody::Function { instructions, .. } => instructions.push(inst),
+                    ModuleBody::Module { instructions, .. } => instructions.push(inst),
+                    _ => {
+                        return Err(next
+                            .span
+                            .error(format!("Cannot apply an instruction to {:?}.", next.data)))
+                    }
+                }
+                Ok(next)
+            }
+            _ => Err(next.span.error(format!(
+                "Unexpected token {:?} in module body. Only resources, submodules, and imports can be defined inside a module.", 
+                next.data
+            ))),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct FnArg {
     name: Chunk<String>,
     data_type: Chunk<String>,
@@ -195,6 +247,7 @@ impl Parsable for FnArg {
     }
 }
 
+#[derive(Debug)]
 pub enum AssignmentOperator {
     Assign,
     AddAssign,
@@ -205,7 +258,8 @@ pub enum AssignmentOperator {
 
 impl Parsable for AssignmentOperator {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<Self>, SourceError> {
-        let token = src.expect_next()?;
+        let token = src
+            .expect_next("Trying to match assignment operator, but reached the end of the file.")?;
         match token.data {
             Token::OpAssign => Ok(token.span.chunk(Self::Assign)),
             Token::OpAddAssign => Ok(token.span.chunk(Self::AddAssign)),
@@ -220,6 +274,7 @@ impl Parsable for AssignmentOperator {
     }
 }
 
+#[derive(Debug)]
 pub enum Statement {
     VariableDefinition {
         name: Chunk<String>,
@@ -242,7 +297,9 @@ impl Parsable for Statement {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<Statement>, SourceError> {
         let c = match src.peek_token() {
             Some(Token::KeywordLet) => {
-                let next = src.expect_next()?;
+                let next = src.expect_next(
+                    "Trying to match variable definition, but reached the end of the file.",
+                )?;
                 let name = src.parse()?;
                 parse_symbol!(
                     src,
@@ -297,10 +354,11 @@ impl Parsable for Statement {
             Token::Terminator,
             "Expected a semicolon (terminator) to end a statement, but got {:?} instead."
         );
-        c
+        Ok(c)
     }
 }
 
+#[derive(Debug)]
 pub enum Expression {
     ResourcePath(Chunk<String>, Chunk<String>),
     ConstantInt(isize),
@@ -311,6 +369,7 @@ pub enum Expression {
     Selector { sel_type: char, criteria: String },
 
     Variable(String),
+    Access(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
     FnCall(Chunk<String>, Chunk<Box<FnArgs>>),
 
     RelativePos(f64, f64, f64),
@@ -330,7 +389,8 @@ pub enum Expression {
 
 impl Parsable for Expression {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<Expression>, SourceError> {
-        let next = src.expect_next()?;
+        let next =
+            src.expect_next("Trying to match expression, but reached the end of the file.")?;
         let first = match next.data {
             Token::Integer(i) => Ok(next.span.chunk(Self::ConstantInt(i))),
             Token::Float(f) => Ok(next.span.chunk(Self::ConstantFloat(f))),
@@ -344,7 +404,7 @@ impl Parsable for Expression {
 
                 if let Some(Token::BracketOpen) = src.peek_token() {
                     src.next();
-                    while !src.is_done() {
+                    loop {
                         let next_char = src.next_raw()?;
                         if next_char == ']' {
                             break;
@@ -390,6 +450,50 @@ impl Parsable for Expression {
                 span: Span::new(next.span.start, src.get_pos()),
             }),
 
+            Token::PosRelative(x) => {
+                let yt = src.expect_next("Trying to match Y component of relative vector, but reached the end of the file.")?;
+                let Token::PosRelative(y) = yt.data else {
+                    return Err(next.span.error(format!(
+                        "Expected second Y component of relative vector, instead got {:?}.",
+                        next.data
+                    )));
+                };
+                let zt = src.expect_next("Trying to match Z component of relative vector, but reached the end of the file.")?;
+                let Token::PosRelative(z) = zt.data else {
+                    return Err(next.span.error(format!(
+                        "Expected third Z component of relative vector, instead got {:?}.",
+                        next.data
+                    )));
+                };
+
+                Ok(Chunk {
+                    data: Self::RelativePos(x, y, z),
+                    span: Span::new(next.span.start, zt.span.end),
+                })
+            }
+
+            Token::PosDirectional(x) => {
+                let yt = src.expect_next("Trying to match Y component of directional vector, but reached the end of the file.")?;
+                let Token::PosDirectional(y) = yt.data else {
+                    return Err(next.span.error(format!(
+                        "Expected second Y component of directional vector, instead got {:?}.",
+                        next.data
+                    )));
+                };
+                let zt = src.expect_next("Trying to match Z component of directional vector, but reached the end of the file.")?;
+                let Token::PosDirectional(z) = zt.data else {
+                    return Err(next.span.error(format!(
+                        "Expected third Z component of directional vector, instead got {:?}.",
+                        next.data
+                    )));
+                };
+
+                Ok(Chunk {
+                    data: Self::DirectionalPos(x, y, z),
+                    span: Span::new(next.span.start, zt.span.end),
+                })
+            }
+
             token => Err(SourceError {
                 span: next.span,
                 message: format!("Expected expression, instead got {:?}.", token),
@@ -400,12 +504,14 @@ impl Parsable for Expression {
     }
 }
 
+#[derive(Debug)]
 pub enum Condition {
     If(Expression),
     As(Expression),
     At(Expression),
 }
 
+#[derive(Debug)]
 pub struct FnArgs {
     pos_args: Vec<Chunk<Expression>>,
     named_args: HashMap<String, Chunk<Expression>>,
@@ -430,7 +536,7 @@ impl Parsable for FnArgs {
                 Arg::Named(name, value) => {
                     pos_done = true;
 
-                    // make message first, so its not moved.
+                    // make error message first, so its not moved.
                     let message = format!("Argument '{}' already defined.", name);
                     if let Some(_) = named_args.insert(name, value) {
                         return Err(SourceError {
@@ -452,7 +558,7 @@ impl Parsable for FnArgs {
             }
         }
 
-        let paren_end = src.expect_next()?;
+        let paren_end = src.expect_next("Trying to match closing parenthisis for arguments (')'), but reached the end of the file.")?;
 
         Ok(Chunk {
             span: Span::new(start, paren_end.span.end),
@@ -464,13 +570,12 @@ impl Parsable for FnArgs {
     }
 }
 
+#[derive(Debug)]
 pub enum Arg {
     Named(String, Chunk<Expression>),
     Positional(Chunk<Expression>),
 }
 
 impl Parsable for Arg {
-    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Arg>, SourceError> {
-        todo!()
-    }
+    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Arg>, SourceError> {}
 }

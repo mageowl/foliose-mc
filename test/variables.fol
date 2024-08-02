@@ -1,0 +1,14 @@
+// pack.fol
+
+module test {
+  #[expose]
+  fn my_function() {
+    let my_variable = 42;
+    my_variable += 1;
+    // print("my_variable = {my_variable}");
+   
+    // let my_creeper = summon(:creeper, @s.pos(), nbt.Fuse = my_variable);
+    // at my_creeper do my_creeper.tp(~ ~5 ~);
+  }
+}
+
