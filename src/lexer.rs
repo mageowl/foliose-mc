@@ -82,18 +82,28 @@ impl<'a> Iterator for TokenStream<'a> {
         let mut context = Context::Program;
 
         while let Some(char) = self.source.next() {
+            if char == '\n' {
+                self.pos.ln += 1;
+                self.pos.col = 1;
+            } else {
+                self.pos.col += 1;
+            }
+
             match context {
                 Context::Program => {
                     match char {
                         '\n' | '\t' | '\r' | ' ' => {
                             if !chunk.is_empty() {
                                 break;
+                            } else {
+                                start = self.pos;
                             }
                         }
                         c if OPERATORS.contains(&c) => {
                             chunk.push(char);
                             if self.source.peek().is_some_and(|c| OPERATORS.contains(c)) {
                                 self.pos.col += 1;
+                                // Will never panic: made sure it was Some above.
                                 chunk.push(self.source.next().unwrap());
                             }
 
@@ -146,7 +156,7 @@ impl<'a> Iterator for TokenStream<'a> {
                         return Some(Ok(Chunk {
                             span: Span::new(start, self.pos),
                             data: Token::String(chunk),
-                        }))
+                        }));
                     }
                     _ => chunk.push(char),
                 },
@@ -157,14 +167,6 @@ impl<'a> Iterator for TokenStream<'a> {
                     }
                     _ => (),
                 },
-            }
-
-            if char == '\n' {
-                self.pos.ln += 1;
-                self.pos.col = 1;
-                start = self.pos;
-            } else {
-                self.pos.col += 1;
             }
         }
 

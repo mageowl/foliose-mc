@@ -29,8 +29,8 @@ pub enum Token {
     OpSubtract,
     OpMultiplyAssign,
     OpMultiply,
-    OpDivisionAssign,
-    OpDivision,
+    OpDivideAssign,
+    OpDivide,
     OpModulus,
     OpLessThan,
     OpLessThanEq,
@@ -86,8 +86,8 @@ impl TryFrom<String> for Token {
             "-" => Ok(Token::OpSubtract),
             "*=" => Ok(Token::OpMultiplyAssign),
             "*" => Ok(Token::OpMultiply),
-            "/=" => Ok(Token::OpDivisionAssign),
-            "/" => Ok(Token::OpDivision),
+            "/=" => Ok(Token::OpDivideAssign),
+            "/" => Ok(Token::OpDivide),
             "%" => Ok(Token::OpModulus),
             "<" => Ok(Token::OpLessThan),
             "<=" => Ok(Token::OpLessThanEq),
@@ -125,7 +125,8 @@ impl TryFrom<String> for Token {
             }
 
             "~" => Ok(Self::PosRelative(0.)),
-            pos if pos.chars().next().unwrap() == '~' => {
+            pos if pos.starts_with('~') => {
+                // Will never panic: made sure it has prefix above.
                 Ok(Self::PosRelative(value.strip_prefix("~").unwrap().parse().map_err(|_| {
                     format!(
                         "Invalid relative coordinate '{num}'.",
@@ -135,7 +136,8 @@ impl TryFrom<String> for Token {
             }
 
             "^" => Ok(Self::PosDirectional(0.)),
-            pos if pos.chars().next().unwrap() == '^' => {
+            pos if pos.starts_with('~') => {
+                // Will never panic: made sure it has prefix above.
                 Ok(Self::PosDirectional(value.strip_prefix("^").unwrap().parse().map_err(|_| {
                     format!(
                         "Invalid directional coordinate '{num}'.",

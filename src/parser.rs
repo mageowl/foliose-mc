@@ -265,7 +265,7 @@ impl Parsable for AssignmentOperator {
             Token::OpAddAssign => Ok(token.span.chunk(Self::AddAssign)),
             Token::OpSubtractAssign => Ok(token.span.chunk(Self::SubAssign)),
             Token::OpMultiplyAssign => Ok(token.span.chunk(Self::MulAssign)),
-            Token::OpDivisionAssign => Ok(token.span.chunk(Self::DivAssign)),
+            Token::OpDivideAssign => Ok(token.span.chunk(Self::DivAssign)),
             t => Err(token.span.error(format!(
                 "Expected assignment operator, but instead got {:?}.",
                 t
@@ -285,12 +285,7 @@ pub enum Statement {
         value: Chunk<Expression>,
         op: Chunk<AssignmentOperator>,
     },
-    FnCall(Chunk<String>, Chunk<FnArgs>),
-    Conditional {
-        conditions: Vec<Chunk<Condition>>,
-        block: Vec<Chunk<Statement>>,
-        else_block: Vec<Chunk<Statement>>,
-    },
+    OrphanedExpr(Expression),
 }
 
 impl Parsable for Statement {
@@ -319,12 +314,15 @@ impl Parsable for Statement {
             Some(_) => {
                 let expr = src.parse()?;
 
-                if let Expression::FnCall(name, args) = expr.data {
-                    Ok(expr.span.chunk(Self::FnCall(name, args.map(|c| *c))))
-                } else {
-                    let assignment_op = src.parse();
-
-                    if let Ok(op) = assignment_op {
+                match src.peek_token() {
+                    Some(
+                        Token::OpAssign
+                        | Token::OpAddAssign
+                        | Token::OpSubtractAssign
+                        | Token::OpMultiplyAssign
+                        | Token::OpDivideAssign,
+                    ) => {
+                        let op = src.parse()?;
                         let value = src.parse()?;
                         Ok(Chunk {
                             span: Span::new(expr.span.start, value.span.end),
@@ -334,12 +332,8 @@ impl Parsable for Statement {
                                 op,
                             },
                         })
-                    } else {
-                        Err(SourceError {
-                            span: expr.span,
-                            message: "Orphaned expressions are not allowed.".to_string(),
-                        })
                     }
+                    _ => Ok(expr.map(|x| Self::OrphanedExpr(x))),
                 }
             }
 
@@ -366,11 +360,20 @@ pub enum Expression {
     ConstantString(String),
     ConstantBoolean(bool),
 
-    Selector { sel_type: char, criteria: String },
+    Selector {
+        sel_type: char,
+        criteria: String,
+    },
 
     Variable(String),
     Access(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
     FnCall(Chunk<String>, Chunk<Box<FnArgs>>),
+
+    Conditional {
+        conditions: Vec<Chunk<Condition>>,
+        block: Vec<Chunk<Statement>>,
+        else_block: Vec<Chunk<Statement>>,
+    },
 
     RelativePos(f64, f64, f64),
     DirectionalPos(f64, f64, f64),
@@ -387,13 +390,63 @@ pub enum Expression {
     IsGt(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
 }
 
+fn parse_static_pos(
+    src: &mut TokenStream,
+    x: f64,
+    next: Chunk<Token>,
+) -> Result<Chunk<Expression>, SourceError> {
+    let yt = src.expect_next(
+        "Trying to match Y component of static vector, but reached the end of the file.",
+    )?;
+    let y = match yt.data {
+        Token::Integer(n) => n as f64,
+        Token::Float(n) => n,
+        _ => {
+            return Err(next.span.error(format!(
+                "Expected second Y component of relative vector, instead got {:?}.",
+                next.data
+            )))
+        }
+    };
+    let zt = src.expect_next(
+        "Trying to match Z component of relative vector, but reached the end of the file.",
+    )?;
+    let z = match zt.data {
+        Token::Integer(n) => n as f64,
+        Token::Float(n) => n,
+        _ => {
+            return Err(next.span.error(format!(
+                "Expected third Z component of relative vector, instead got {:?}.",
+                next.data
+            )));
+        }
+    };
+
+    Ok(Chunk {
+        data: Expression::StaticPos(x, y, z),
+        span: Span::new(next.span.start, zt.span.end),
+    })
+}
+
 impl Parsable for Expression {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<Expression>, SourceError> {
         let next =
             src.expect_next("Trying to match expression, but reached the end of the file.")?;
-        let first = match next.data {
-            Token::Integer(i) => Ok(next.span.chunk(Self::ConstantInt(i))),
-            Token::Float(f) => Ok(next.span.chunk(Self::ConstantFloat(f))),
+        let lhs = match next.data {
+            Token::Integer(i) => {
+                if let Some(Token::Integer(_) | Token::Float(_)) = src.peek_token() {
+                    parse_static_pos(src, i as f64, next)
+                } else {
+                    Ok(next.span.chunk(Self::ConstantInt(i)))
+                }
+            }
+            Token::Float(f) => {
+                if let Some(Token::Integer(_) | Token::Float(_)) = src.peek_token() {
+                    parse_static_pos(src, f, next)
+                } else {
+                    Ok(next.span.chunk(Self::ConstantFloat(f)))
+                }
+            }
             Token::String(s) => Ok(next.span.chunk(Self::ConstantString(s))),
 
             Token::True => Ok(next.span.chunk(Self::ConstantBoolean(true))),
@@ -500,7 +553,73 @@ impl Parsable for Expression {
             }),
         }?;
 
-        Ok(first)
+        match src.peek_token() {
+            Some(Token::OpAdd) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::Sum(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpSubtract) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::Difference(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpMultiply) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::Product(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpDivide) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::Quotient(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpModulus) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::Remainder(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+
+            Some(Token::OpAccess) => {
+                src.next();
+                let rhs = src.parse()?;
+
+                fn transform(
+                    a: Chunk<Box<Expression>>,
+                    rhs: Chunk<Box<Expression>>,
+                ) -> Chunk<Expression> {
+                    match *rhs.data {
+                        Expression::Access(b, c) => Chunk {
+                            span: Span::new(a.span.start, rhs.span.end),
+                            data: Expression::Access(transform(a, b).map(Box::new), c),
+                        },
+                        data => Chunk {
+                            span: Span::new(a.span.start, rhs.span.end),
+                            data: Expression::Access(a, rhs.span.chunk(Box::new(data))),
+                        },
+                    }
+                }
+
+                Ok(transform(lhs.map(Box::new), rhs.map(Box::new)))
+            }
+
+            _ => Ok(lhs),
+        }
     }
 }
 
@@ -520,7 +639,7 @@ pub struct FnArgs {
 impl Parsable for FnArgs {
     fn parse_from(src: &mut TokenStream) -> Result<Chunk<FnArgs>, SourceError> {
         let start = src.get_pos();
-        src.next();
+        src.next(); // Skip open parenthisis.
 
         let mut named_args = HashMap::new();
         let mut pos_args = Vec::new();
@@ -537,8 +656,8 @@ impl Parsable for FnArgs {
                     pos_done = true;
 
                     // make error message first, so its not moved.
-                    let message = format!("Argument '{}' already defined.", name);
-                    if let Some(_) = named_args.insert(name, value) {
+                    let message = format!("Argument '{}' already defined.", name.data);
+                    if let Some(_) = named_args.insert(name.data, value) {
                         return Err(SourceError {
                             span: arg.span,
                             message,
@@ -553,7 +672,7 @@ impl Parsable for FnArgs {
                                 .to_string(),
                         });
                     }
-                    pos_args.push(value)
+                    pos_args.push(arg.span.chunk(value))
                 }
             }
         }
@@ -572,10 +691,18 @@ impl Parsable for FnArgs {
 
 #[derive(Debug)]
 pub enum Arg {
-    Named(String, Chunk<Expression>),
-    Positional(Chunk<Expression>),
+    Named(Chunk<String>, Chunk<Expression>),
+    Positional(Expression),
 }
 
 impl Parsable for Arg {
-    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Arg>, SourceError> {}
+    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Arg>, SourceError> {
+        let lhs = src.parse()?;
+
+        if let Some(Token::OpAssign) = src.peek_token() {
+            todo!()
+        } else {
+            Ok(lhs.map(|x| Self::Positional(x)))
+        }
+    }
 }
