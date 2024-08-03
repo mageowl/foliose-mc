@@ -8,7 +8,6 @@ pub enum Token {
     KeywordFn,
     KeywordLet,
     KeywordUse,
-    KeywordDo,
     KeywordElse,
 
     ConditionAt,
@@ -65,7 +64,6 @@ impl TryFrom<String> for Token {
             "fn" => Ok(Token::KeywordFn),
             "let" => Ok(Token::KeywordLet),
             "use" => Ok(Token::KeywordUse),
-            "do" => Ok(Token::KeywordDo),
             "else" => Ok(Token::KeywordElse),
 
             "at" => Ok(Token::ConditionAt),

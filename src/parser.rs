@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format, os::linux::raw::stat};
 
 use crate::{
     error::{Chunk, SourceError, Span},
@@ -309,8 +309,6 @@ impl Parsable for Statement {
                 })
             }
 
-            Some(t) if CONDITIONS.contains(t) => todo!(),
-
             Some(_) => {
                 let expr = src.parse()?;
 
@@ -369,10 +367,12 @@ pub enum Expression {
     Access(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
     FnCall(Chunk<String>, Chunk<Box<FnArgs>>),
 
+    Block(Vec<Chunk<Box<Statement>>>),
+
     Conditional {
         conditions: Vec<Chunk<Condition>>,
         block: Vec<Chunk<Statement>>,
-        else_block: Vec<Chunk<Statement>>,
+        else_block: Option<Vec<Chunk<Statement>>>,
     },
 
     RelativePos(f64, f64, f64),
@@ -547,6 +547,42 @@ impl Parsable for Expression {
                 })
             }
 
+            t if CONDITIONS.contains(&t) => {
+                let mut conditions = Vec::new();
+                conditions.push(Condition::parse_with_token(next.span.chunk(t), src)?);
+
+                while src.peek_token().is_some_and(|t| CONDITIONS.contains(t)) {
+                    conditions.push(src.parse()?);
+                }
+
+                // Will never panic: there must be at least one condition due to token
+                // check in expression parsing.
+                let start = conditions.first().unwrap().span.start;
+
+                let block_start =
+                    src.expect_next("Expected condition block, but reached the end of the file.")?;
+                match &block_start.data {
+                    &Token::BraceOpen => {
+                        let block = parse_group!(src, Token::BraceClose);
+                        Ok(Chunk {
+                            span: Span::new(start, src.get_pos()),
+                            data: Self::Conditional {
+                                conditions,
+                                block,
+                                else_block: None,
+                            },
+                        })
+                    }
+                    _ => Err(SourceError {
+                        span: block_start.span,
+                        message: format!(
+                            "Exprected condition block, instead got {:?}.",
+                            block_start
+                        ),
+                    }),
+                }
+            }
+
             token => Err(SourceError {
                 span: next.span,
                 message: format!("Expected expression, instead got {:?}.", token),
@@ -625,9 +661,55 @@ impl Parsable for Expression {
 
 #[derive(Debug)]
 pub enum Condition {
-    If(Expression),
-    As(Expression),
-    At(Expression),
+    If(Chunk<Expression>),
+    As(Chunk<Expression>),
+    At(Chunk<Expression>),
+}
+
+impl Condition {
+    fn parse_with_token(
+        keyword: Chunk<Token>,
+        src: &mut TokenStream,
+    ) -> Result<Chunk<Self>, SourceError> {
+        match keyword.data {
+            Token::ConditionIf => {
+                let expr = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(keyword.span.start, expr.span.end),
+                    data: Self::If(expr),
+                })
+            }
+            Token::ConditionAt => {
+                let expr = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(keyword.span.start, expr.span.end),
+                    data: Self::At(expr),
+                })
+            }
+            Token::ConditionAs => {
+                let expr = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(keyword.span.start, expr.span.end),
+                    data: Self::As(expr),
+                })
+            }
+            _ => Err(keyword.span.error(format!(
+                "Expected conditional statement, instead got {:?}.",
+                keyword.data
+            ))),
+        }
+    }
+}
+
+impl Parsable for Condition {
+    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Self>, SourceError> {
+        Condition::parse_with_token(
+            src.expect_next(
+                "Trying to match a conditional statement, but reached the end of the file.",
+            )?,
+            src,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -645,39 +727,56 @@ impl Parsable for FnArgs {
         let mut pos_args = Vec::new();
         let mut pos_done = false;
 
-        while !src.is_done() {
-            if let Some(Token::ParenClose) = src.peek_token() {
-                break;
-            }
+        let paren_end = if let Some(Token::ParenClose) = src.peek_token() {
+            src.expect_next("Trying to match closing parenthisis for arguments (')'), but reached the end of the file.")?
+        } else {
+            while !src.is_done() {
+                let arg = src.parse()?;
+                match arg.data {
+                    Arg::Named(name, value) => {
+                        pos_done = true;
 
-            let arg = src.parse()?;
-            match arg.data {
-                Arg::Named(name, value) => {
-                    pos_done = true;
+                        // make error message first, so its not moved.
+                        let message = format!("Argument '{}' already defined.", name.data);
+                        if let Some(_) = named_args.insert(name.data, value) {
+                            return Err(SourceError {
+                                span: arg.span,
+                                message,
+                            });
+                        }
+                    }
+                    Arg::Positional(value) => {
+                        if pos_done {
+                            return Err(SourceError {
+                                span: arg.span,
+                                message: "Positional arguments cannot come after named ones."
+                                    .to_string(),
+                            });
+                        }
+                        pos_args.push(arg.span.chunk(value))
+                    }
+                }
 
-                    // make error message first, so its not moved.
-                    let message = format!("Argument '{}' already defined.", name.data);
-                    if let Some(_) = named_args.insert(name.data, value) {
+                match src.peek_token() {
+                    Some(Token::ArgSeperator) => {
+                        src.next();
+                    }
+                    Some(Token::ParenClose) => break,
+                    _ => {
+                        let next = src.expect_next("Trying to match closing parenthisis or comma for arguments, but reached the end of the file.")?;
                         return Err(SourceError {
-                            span: arg.span,
-                            message,
+                            span: next.span,
+                            message: format!(
+                                "Unexpected {:?} in arguments. Maybe add a comma?",
+                                next.data
+                            ),
                         });
                     }
                 }
-                Arg::Positional(value) => {
-                    if pos_done {
-                        return Err(SourceError {
-                            span: arg.span,
-                            message: "Positional arguments cannot come after named ones."
-                                .to_string(),
-                        });
-                    }
-                    pos_args.push(arg.span.chunk(value))
-                }
             }
-        }
 
-        let paren_end = src.expect_next("Trying to match closing parenthisis for arguments (')'), but reached the end of the file.")?;
+            src.expect_next("Trying to match closing parenthisis for arguments (')'), but reached the end of the file.")?
+        };
 
         Ok(Chunk {
             span: Span::new(start, paren_end.span.end),
@@ -700,7 +799,23 @@ impl Parsable for Arg {
         let lhs = src.parse()?;
 
         if let Some(Token::OpAssign) = src.peek_token() {
-            todo!()
+            src.next();
+
+            fn get_name(exp: Expression) -> Result<String, String> {
+                match exp {
+                    Expression::Variable(s) => Ok(s),
+                    Expression::Access(a, b) => Ok(get_name(*a.data)? + "." + &get_name(*b.data)?),
+                    _ => Err(format!("Invalid argument name '{:?}'.", exp)),
+                }
+            }
+
+            let arg_name = get_name(lhs.data).map_err(|msg| lhs.span.error(msg))?;
+            let rhs = src.parse()?;
+
+            Ok(Chunk {
+                span: Span::new(lhs.span.start, rhs.span.end),
+                data: Self::Named(lhs.span.chunk(arg_name), rhs),
+            })
         } else {
             Ok(lhs.map(|x| Self::Positional(x)))
         }
