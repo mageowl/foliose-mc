@@ -387,7 +387,9 @@ pub enum Expression {
 
     IsEq(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
     IsLt(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
+    IsLtEq(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
     IsGt(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
+    IsGtEq(Chunk<Box<Expression>>, Chunk<Box<Expression>>),
 }
 
 fn parse_static_pos(
@@ -628,6 +630,46 @@ impl Parsable for Expression {
                 Ok(Chunk {
                     span: Span::new(lhs.span.start, rhs.span.end),
                     data: Self::Remainder(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpEq) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::IsEq(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpLessThan) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::IsLt(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpLessThanEq) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::IsLtEq(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpGreaterThan) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::IsGt(lhs.map(Box::new), rhs.map(Box::new)),
+                })
+            }
+            Some(Token::OpGreaterThanEq) => {
+                src.next();
+                let rhs = src.parse()?;
+                Ok(Chunk {
+                    span: Span::new(lhs.span.start, rhs.span.end),
+                    data: Self::IsGtEq(lhs.map(Box::new), rhs.map(Box::new)),
                 })
             }
 
