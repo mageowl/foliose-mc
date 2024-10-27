@@ -279,13 +279,14 @@ pub enum Statement {
     VariableDefinition {
         name: Chunk<String>,
         value: Chunk<Expression>,
+        var_type: Option<Chunk<TypeName>>,
     },
     Assignment {
         var: Chunk<Expression>,
         value: Chunk<Expression>,
         op: Chunk<AssignmentOperator>,
     },
-    OrphanedExpr(Expression),
+    Expression(Expression),
 }
 
 impl Parsable for Statement {
@@ -296,6 +297,16 @@ impl Parsable for Statement {
                     "Trying to match variable definition, but reached the end of the file.",
                 )?;
                 let name = src.parse()?;
+
+                let var_type = if let Some(Token::OpColon) = src.peek_token() {
+                    src.expect_next(
+                        "Trying to match colon for variable type, but reached the end of the file.",
+                    )?;
+                    Some(src.parse()?)
+                } else {
+                    None
+                };
+
                 parse_symbol!(
                     src,
                     Token::OpAssign,
@@ -305,7 +316,11 @@ impl Parsable for Statement {
 
                 Ok(Chunk {
                     span: Span::new(next.span.start, src.get_pos()),
-                    data: Self::VariableDefinition { name, value },
+                    data: Self::VariableDefinition {
+                        name,
+                        value,
+                        var_type,
+                    },
                 })
             }
 
@@ -331,7 +346,7 @@ impl Parsable for Statement {
                             },
                         })
                     }
-                    _ => Ok(expr.map(|x| Self::OrphanedExpr(x))),
+                    _ => Ok(expr.map(|x| Self::Expression(x))),
                 }
             }
 
@@ -492,6 +507,21 @@ impl Parsable for Expression {
                     }),
                     _ => Ok(name.span.chunk(Self::Variable(name.data))),
                 }
+            }
+
+            Token::BraceOpen => {
+                let mut body = Vec::new();
+                while !src.is_done() {
+                    if let Some(Token::BraceClose) = src.peek_token() {
+                        break;
+                    }
+                    body.push(src.parse()?.map(Box::new));
+                }
+
+                Ok(Chunk {
+                    span: Span::new(next.span.start, src.expect_next("Trying to match closing brace of block, but reached the end of the file.")?.span.end),
+                    data: Self::Block(body),
+                })
             }
 
             Token::OpColon => Ok(Chunk {
@@ -860,6 +890,63 @@ impl Parsable for Arg {
             })
         } else {
             Ok(lhs.map(|x| Self::Positional(x)))
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TypeName {
+    name: Chunk<String>,
+    generics: Option<Vec<Chunk<Box<TypeName>>>>,
+}
+
+impl Parsable for TypeName {
+    fn parse_from(src: &mut TokenStream) -> Result<Chunk<Self>, SourceError> {
+        let name = src.parse()?;
+
+        if let Some(Token::OpLessThan) = src.peek_token() {
+            src.expect_next("Trying to match start of generics, but reached the end of the file.")?;
+            let mut generics = Vec::new();
+
+            while !src.is_done() {
+                generics.push(src.parse()?.map(Box::new));
+
+                match src.peek_token() {
+                    Some(Token::ArgSeperator) => {
+                        src.next();
+                    }
+                    Some(Token::OpGreaterThan) => {
+                        src.next();
+                        break;
+                    }
+                    _ => {
+                        let next = src.expect_next("Trying to match closing bracket or comma for type generics, but reached the end of the file.")?;
+                        return Err(SourceError {
+                            span: next.span,
+                            message: format!(
+                                "Unexpected {:?} in type generics. Maybe add a comma?",
+                                next.data
+                            ),
+                        });
+                    }
+                }
+            }
+
+            Ok(Chunk {
+                span: Span::new(name.span.start, src.get_pos()),
+                data: Self {
+                    name,
+                    generics: Some(generics),
+                },
+            })
+        } else {
+            Ok(Chunk {
+                span: name.span,
+                data: Self {
+                    name,
+                    generics: None,
+                },
+            })
         }
     }
 }

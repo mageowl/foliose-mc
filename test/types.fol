@@ -1,0 +1,11 @@
+
+module test {
+  struct WandItem : Item {
+    spells: Array<Spell>,
+  }
+
+  #[expose]
+  fn give_wand(entity: Player) {
+    give(entity, WandItem)
+  }
+}
